@@ -1,7 +1,6 @@
 # Android_Framework_Releated
 
     该仓库文章旨在总结Android Framework相关知识，从app开发者日常接触到的场景进入Android Framework，从系统层面理解应用的运行流程及原理。
-目前Aosp已经开放Android13源代码，因此基于android-13.0.0_r1分支的源码进行分析总结。
 
 1. 什么是Android framework ?
     众所周知，Android基于Linux系统，从上到下依次分为 App -> Framework -> Hal驱动 -> Kernel。 Framework层为App提供了API支持，将API的实现细节封装起来，App只
@@ -26,3 +25,4 @@
 
 PS: 对于学习系统源码来讲，最好是能够下载编译源码进行真机/模拟器烧录，改动代码之后直接可以看到修改的效果。 
 当然也可以直接查看Android官方源码进行学习(https://cs.android.com/android/platform/superproject/+/android-13.0.0_r1:)
+目前Aosp已经开放Android13源代码，因此基于android-13.0.0_r1分支的源码进行分析总结。
