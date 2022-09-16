@@ -1,4 +1,5 @@
 # Android_Framework_Releated
+
     该仓库文章旨在总结Android Framework相关知识，从app开发者日常接触到的场景进入Android Framework，从系统层面理解应用的运行流程及原理。 
 目前Aosp已经开放Android13源代码，因此基于android-13.0.0_r1分支的源码进行分析总结。
 
