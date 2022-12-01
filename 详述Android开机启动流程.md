@@ -1071,10 +1071,36 @@ void AndroidRuntime::start(const char* className, const Vector<String8>& options
     }
 ```
 
+[frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java](https://cs.android.com/android/platform/superproject/+/android-13.0.0_r1:frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java)
+
+```java
+    public static final class Lifecycle extends SystemService {
+        private final ActivityManagerService mService;
+        private static ActivityTaskManagerService sAtm;
+
+        public Lifecycle(Context context) {
+            super(context);
+            mService = new ActivityManagerService(context, sAtm);
+        }
+
+        public static ActivityManagerService startService(
+                SystemServiceManager ssm, ActivityTaskManagerService atm) {
+            sAtm = atm;
+            return ssm.startService(ActivityManagerService.Lifecycle.class).getService();
+        }
+    
+        @Override
+        public void onStart() {
+            mService.start();
+        }
+        ... ...
+    }
+```
+
 [SystemServiceManager.java#startService](https://cs.android.com/android/platform/superproject/+/android-13.0.0_r1:frameworks/base/services/core/java/com/android/server/SystemServiceManager.java;bpv=1;bpt=1;l=143?gsn=startService&gs=kythe%3A%2F%2Fandroid.googlesource.com%2Fplatform%2Fsuperproject%3Flang%3Djava%3Fpath%3Dcom.android.server.SystemServiceManager%23947eb9ef1b3ccdf13762a9c86b2ba4f4256fbdf9980c46f5255f309ff433b8eb)
 
 ```java
-    public SystemService startService(Stringcl    public <T extends SystemService> T startService(Class<T> serviceClass) {
+    public <T extends SystemService> T startService(Class<T> serviceClass) {
         try {
             final String name = serviceClass.getName();
             Slog.i(TAG, "Starting " + name);
@@ -1109,11 +1135,120 @@ void AndroidRuntime::start(const char* className, const Vector<String8>& options
             Trace.traceEnd(Trace.TRACE_TAG_SYSTEM_SERVER);
         }
     }
-assName) {
-        final Class<SystemService> serviceClass = loadClassFromLoader(className,
-                this.getClass().getClassLoader());
-        return startService(serviceClass);
+
+    public void startService(@NonNull final SystemService service) {
+        // Check if already started
+        String className = service.getClass().getName();
+        if (mServiceClassnames.contains(className)) {
+            Slog.i(TAG, "Not starting an already started service " + className);
+            return;
+        }
+        mServiceClassnames.add(className);
+
+        // Register it.
+        mServices.add(service);
+
+        // Start it.
+        long time = SystemClock.elapsedRealtime();
+        try {
+            service.onStart();
+        } catch (RuntimeException ex) {
+            throw new RuntimeException("Failed to start service " + service.getClass().getName()
+                    + ": onStart threw an exception", ex);
+        }
+        warnIfTooLong(SystemClock.elapsedRealtime() - time, service, "onStart");
     }
 ```
 
-&emsp; 从上述代码可以看出执行了ActivityManagerService的构造方法。
+&emsp; 从上述代码可以看出实际上的执行顺序为
+
+-> ActivityManagerService的构造方法
+
+-> ActivityManagerService的onStart方法
+
+-> ActivityManagerService的setSystemProcess方法
+
+### 12. ActivityManagerService systemReady
+
+&emsp; 此时ActivityManagerService已经准备完毕，开机之后用户首先看到的其实是Launcher界面，那么Launcher是在什么时候启动的？ 包括还有一些运行必须的系统应用，它们是在什么时候启动的呢？
+
+[startOtherServices](https://cs.android.com/android/platform/superproject/+/android-13.0.0_r1:frameworks/base/services/java/com/android/server/SystemServer.java;drc=029c9261c66d76a5085b91a0775bb982180af9e7;bpv=1;bpt=1;l=1406?gsn=startOtherServices&gs=kythe%3A%2F%2Fandroid.googlesource.com%2Fplatform%2Fsuperproject%3Flang%3Djava%3Fpath%3Dcom.android.server.SystemServer%23b2bd7d1c38024438dcf0d6d4232a56c730829d443477c46902954cba4adecbb5)
+
+```java
+        // We now tell the activity manager it is okay to run third party
+        // code.  It will call back into us once it has gotten to the state
+        // where third party code can really run (but before it has actually
+        // started launching the initial applications), for us to complete our
+        // initialization.
+        mActivityManagerService.systemReady(XXX, t);
+```
+
+&emsp; 我们可以看到，在startOtherServices流程的最后，执行了ActivityManagerService#systemReady方法，顾名思义目前系统准备完毕了，可以运行应用程序了。接下来我们继续来看下systemReady方法
+
+```java
+    public void systemReady(final Runnable goingCallback, @NonNull TimingsTraceAndSlog t) {
+        t.traceBegin("PhaseActivityManagerReady");
+        mSystemServiceManager.preSystemReady();
+        
+        ... ...
+        synchronized (this) {
+            // Only start up encryption-aware persistent apps; once user is
+            // unlocked we'll come back around and start unaware apps
+            t.traceBegin("startPersistentApps");
+            startPersistentApps(PackageManager.MATCH_DIRECT_BOOT_AWARE);
+            t.traceEnd();
+
+            // Start up initial activity.
+            mBooting = true;
+            // Enable home activity for system user, so that the system can always boot. We don't
+            // do this when the system user is not setup since the setup wizard should be the one
+            // to handle home activity in this case.
+            if (UserManager.isSplitSystemUser() &&
+                    Settings.Secure.getInt(mContext.getContentResolver(),
+                         Settings.Secure.USER_SETUP_COMPLETE, 0) != 0
+                    || SystemProperties.getBoolean(SYSTEM_USER_HOME_NEEDED, false)) {
+                t.traceBegin("enableHomeActivity");
+                ComponentName cName = new ComponentName(mContext, SystemUserHomeActivity.class);
+                try {
+                    AppGlobals.getPackageManager().setComponentEnabledSetting(cName,
+                            PackageManager.COMPONENT_ENABLED_STATE_ENABLED, 0,
+                            UserHandle.USER_SYSTEM);
+                } catch (RemoteException e) {
+                    throw e.rethrowAsRuntimeException();
+                }
+                t.traceEnd();
+            }
+
+            if (bootingSystemUser) {
+                t.traceBegin("startHomeOnAllDisplays");
+                mAtmInternal.startHomeOnAllDisplays(currentUserId, "systemReady");
+                t.traceEnd();
+            }
+
+            t.traceBegin("showSystemReadyErrorDialogs");
+            mAtmInternal.showSystemReadyErrorDialogsIfNeeded();
+            t.traceEnd();
+            ... ...
+
+            t.traceBegin("resumeTopActivities");
+            mAtmInternal.resumeTopActivities(false /* scheduleIdle */);
+            t.traceEnd();
+
+            if (bootingSystemUser) {
+                t.traceBegin("sendUserSwitchBroadcasts");
+                mUserController.sendUserSwitchBroadcasts(-1, currentUserId);
+                t.traceEnd();
+            }
+
+            ... ...
+        }
+    }
+```
+
+&emsp; 我们可以看到，启动Persistent应用以及Home应用均是在ActivityManagerService的systemReady里完成的。至于Home Activity的启动流程这里就不再分析了，跟Activity的启动流程差不多，可以顺着源码自行进行分析。
+
+## 后记
+
+&emsp; 该文章只是粗略的分析了下Android开机的流程，中间重要的分支及细节均未提及，但是主干的流程是明确的，如对某些流程细节感兴趣，可以针对性的对源码进行研究(如虚拟机的流程)。
+
+&emsp; 笔者还想说的是，Android整个的系统源码毕竟是庞大的，如果不从事对应模块的相关工作，只是泛读的学习，不必太关注细枝末节。熟悉主干的流程，待到有疑问的时候带着问题去看源码，会更加具有目的性也更加高效。比如该文章介绍的开机流程中并没有描述开机动画是在什么时候展示的(bootaniamation是一个native service，是在rc文件里配置启动的)。
